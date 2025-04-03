@@ -1,0 +1,21 @@
+[package]
+name = "overlaymap"
+version = "0.1.0"
+edition = "2024"
+
+[[bench]]
+name = "insert"
+harness = false
+
+[[bench]]
+name = "try_swap"
+harness = false
+
+[[bench]]
+name = "extend_swap"
+harness = false
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5.1"
