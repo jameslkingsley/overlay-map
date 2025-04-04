@@ -15,9 +15,9 @@ It’s designed for scenarios where you want to:
 - ✅ Foreground and background storage per key
 - ✅ On insert, the old foreground is pushed to background (only **one** previous value is retained — not a full history)
 - ✅ If a key exists, its foreground is **always** present — no fallback logic is required during reads
-- ✅ Zero-cost value swapping (via in-place pointer tricks)
-- ✅ No cloning required on insert
-- ✅ Optional conditional swaps (`try_swap`)
+- ✅ Zero-cost value pushing (via in-place pointer tricks)
+- ✅ No cloning required on push
+- ✅ Optional conditional pushes (`push_if`)
 - ✅ Extendable from other maps
 
 ## 🚀 Example
@@ -75,8 +75,8 @@ This is useful when:
 
 ## 📚 Documentation
 
-- [Docs.rs](https://docs.rs/overlaymap)
-- [Crates.io](https://crates.io/crates/overlaymap)
+- [Docs.rs](https://docs.rs/overlay-map)
+- [Crates.io](https://crates.io/crates/overlay-map)
 
 ## 🔒 License
 
@@ -85,6 +85,7 @@ MIT
 ## ✨ Contributing
 
 Contributions, bug reports, and feature requests welcome.
+
 Planned areas of work:
 - Thread-safe version
 - Rollback support
