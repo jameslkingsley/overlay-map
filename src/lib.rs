@@ -2,116 +2,16 @@
 //! the foreground layer is mutable and the background layer is immutable.
 
 use std::{
-    collections::{HashMap, hash_map::RandomState},
+    collections::{hash_map::RandomState, HashMap},
     hash::{BuildHasher, Hash},
     mem::MaybeUninit,
 };
-
-#[repr(u8)]
-#[derive(Debug)]
-pub enum Layer {
-    Foreground,
-    Background,
-    Both,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct Entry<T> {
-    layer: Layer,
-    foreground: MaybeUninit<T>,
-    background: MaybeUninit<T>,
-}
-
-impl<T> Entry<T> {
-    unsafe fn new_foreground(val: T) -> Self {
-        Self {
-            layer: Layer::Foreground,
-            foreground: MaybeUninit::new(val),
-            background: MaybeUninit::uninit(),
-        }
-    }
-
-    unsafe fn insert_foreground(&mut self, val: T) {
-        match self.layer {
-            Layer::Background => {
-                self.foreground = MaybeUninit::new(val);
-                self.layer = Layer::Both;
-            }
-            Layer::Foreground => unsafe {
-                self.foreground.assume_init_drop();
-                self.foreground = MaybeUninit::new(val);
-            },
-            Layer::Both => unsafe {
-                self.foreground.assume_init_drop();
-                self.foreground = MaybeUninit::new(val);
-            },
-        }
-    }
-
-    unsafe fn insert_background(&mut self, val: T) {
-        match self.layer {
-            Layer::Foreground => {
-                self.background = MaybeUninit::new(val);
-                self.layer = Layer::Both;
-            }
-            Layer::Background => unsafe {
-                self.background.assume_init_drop();
-                self.background = MaybeUninit::new(val);
-            },
-            Layer::Both => unsafe {
-                self.background.assume_init_drop();
-                self.background = MaybeUninit::new(val);
-            },
-        }
-    }
-
-    unsafe fn get_foreground(&self) -> Option<&T> {
-        match self.layer {
-            Layer::Foreground | Layer::Both => Some(unsafe { self.foreground.assume_init_ref() }),
-            _ => None,
-        }
-    }
-
-    unsafe fn get_background(&self) -> Option<&T> {
-        match self.layer {
-            Layer::Background | Layer::Both => Some(unsafe { self.background.assume_init_ref() }),
-            _ => None,
-        }
-    }
-
-    unsafe fn get_foreground_mut(&mut self) -> Option<&mut T> {
-        match self.layer {
-            Layer::Foreground | Layer::Both => Some(unsafe { &mut *self.foreground.as_mut_ptr() }),
-            _ => None,
-        }
-    }
-}
-
-impl<V> Drop for Entry<V> {
-    fn drop(&mut self) {
-        unsafe {
-            match self.layer {
-                Layer::Foreground => {
-                    self.foreground.assume_init_drop();
-                }
-                Layer::Background => {
-                    self.background.assume_init_drop();
-                }
-                Layer::Both => {
-                    self.foreground.assume_init_drop();
-                    self.background.assume_init_drop();
-                }
-            }
-        }
-    }
-}
 
 /// A map with two layers: foreground for recent changes, background for original values.
 ///
 /// **Note:** This map is not thread-safe for mutation, but can be safely shared across threads
 /// if only read from.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct OverlayMap<K, V, S = RandomState>
 where
     K: Eq + Hash,
@@ -144,137 +44,188 @@ where
         }
     }
 
-    /// Create a new `OverlayMap` with a custom hasher.
-    pub fn with_hasher(hasher: S) -> Self {
-        Self {
-            map: HashMap::with_hasher(hasher.clone()),
-        }
-    }
-
-    /// Number of unique keys in foreground or background.
+    /// Number of unique keys in the map.
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// Check if the map is empty.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Get an immutable reference to the value associated with the key.
+    ///
+    /// Returns `None` if the key was not found in the map.
     pub fn get(&self, key: &K) -> Option<&V> {
-        self.map
-            .get(key)
-            .map(|entry| unsafe { entry.get_foreground().or_else(|| entry.get_background()) })
-            .flatten()
+        self.map.get(key).map(|entry| entry.get_foreground())
     }
 
+    /// Get an immutable reference to the value associated with the key in the foreground layer.
+    ///
+    /// Returns `None` if the key was not found in the map.
     pub fn get_foreground(&self, key: &K) -> Option<&V> {
-        self.map
-            .get(key)
-            .and_then(|entry| unsafe { entry.get_foreground() })
+        self.map.get(key).map(|entry| entry.get_foreground())
     }
 
+    /// Get an immutable reference to the value associated with the key in the background layer.
+    ///
+    /// Returns `None` if the key was not found in the background layer.
     pub fn get_background(&self, key: &K) -> Option<&V> {
-        self.map
-            .get(key)
-            .and_then(|entry| unsafe { entry.get_background() })
+        self.map.get(key).and_then(|entry| entry.get_background())
     }
 
-    pub fn insert(&mut self, key: K, value: V) {
+    /// Insert a value into the map.
+    ///
+    /// Insertion is zero-copy, meaning the value is moved into the map and any
+    /// existing value is moved into the background layer without cloning.
+    ///
+    /// The insertion order is as follows:
+    ///
+    /// - If the key is not present, the value is inserted into the foreground
+    /// - If the key is present in the foreground, the existing value is moved
+    ///   to the background and the new value is inserted into the foreground
+    /// - If the key is present in the background, the new value is inserted into the foreground
+    pub fn insert_swap(&mut self, key: K, value: V) -> usize {
         if let Some(entry) = self.map.get_mut(&key) {
-            match entry.layer {
-                Layer::Foreground => unsafe {
-                    let fg_ptr = entry.get_foreground_mut().unwrap() as *mut V;
-                    let old_val = std::ptr::read(fg_ptr);
-                    entry.insert_background(old_val);
-                    entry.insert_foreground(value);
-                },
-                Layer::Background => unsafe {
-                    entry.insert_foreground(value);
-                },
-                Layer::Both => unsafe {
-                    let fg_ptr = entry.get_foreground_mut().unwrap() as *mut V;
-                    let old_val = std::ptr::read(fg_ptr);
-                    entry.insert_background(old_val);
-                    entry.insert_foreground(value);
-                },
-            }
+            entry.insert_foreground(value);
+            1
         } else {
-            self.map
-                .insert(key, unsafe { Entry::new_foreground(value) });
-        }
-    }
-
-    pub fn try_swap<F>(&mut self, key: &K, f: F) -> usize
-    where
-        F: FnOnce(&V) -> Option<V>,
-    {
-        if let Some(entry) = self.map.get_mut(&key) {
-            match entry.layer {
-                Layer::Foreground => unsafe {
-                    let fg_ptr = entry.get_foreground().unwrap() as *const V;
-                    let old_val = std::ptr::read(fg_ptr);
-                    if let Some(new_val) = f(&old_val) {
-                        entry.insert_background(old_val);
-                        entry.insert_foreground(new_val);
-                        1
-                    } else {
-                        0
-                    }
-                },
-                Layer::Background => unsafe {
-                    let bg_ptr = entry.get_background().unwrap() as *const V;
-                    let bg_val = std::ptr::read(bg_ptr);
-                    if let Some(new_val) = f(&bg_val) {
-                        entry.insert_foreground(new_val);
-                        1
-                    } else {
-                        0
-                    }
-                },
-                Layer::Both => unsafe {
-                    let fg_ptr = entry.get_foreground_mut().unwrap() as *mut V;
-                    let old_val = std::ptr::read(fg_ptr);
-                    if let Some(new_val) = f(&old_val) {
-                        entry.insert_background(old_val);
-                        entry.insert_foreground(new_val);
-                        1
-                    } else {
-                        0
-                    }
-                },
-            }
-        } else {
+            self.map.insert(key, Entry::new(value));
             0
         }
     }
 
+    /// Extend the map by merging another `HashMap` into it.
+    ///
+    /// Insertion logic follows the same rules as `insert`.
     pub fn extend_swap(&mut self, other: HashMap<K, V, S>) -> usize {
         let mut swaps = 0;
 
-        for (key, new_val) in other {
-            if let Some(entry) = self.map.get_mut(&key) {
-                match entry.layer {
-                    Layer::Foreground => unsafe {
-                        let fg_ptr = entry.get_foreground_mut().unwrap() as *mut V;
-                        let old_val = std::ptr::read(fg_ptr);
-                        entry.insert_background(old_val);
-                        entry.insert_foreground(new_val);
-                        swaps += 1;
-                    },
-                    Layer::Background => unsafe {
-                        entry.insert_foreground(new_val);
-                    },
-                    Layer::Both => unsafe {
-                        let fg_ptr = entry.get_foreground_mut().unwrap() as *mut V;
-                        let old_val = std::ptr::read(fg_ptr);
-                        entry.insert_background(old_val);
-                        entry.insert_foreground(new_val);
-                        swaps += 1;
-                    },
-                }
-            } else {
-                self.map
-                    .insert(key.clone(), unsafe { Entry::new_foreground(new_val) });
-            }
+        for (key, new) in other {
+            swaps += self.insert_swap(key, new);
         }
 
         swaps
+    }
+
+    /// Try to swap the value associated with the key using the given predicate.
+    pub fn try_swap<F>(&mut self, key: &K, predicate: F) -> usize
+    where
+        F: FnOnce(&V) -> Option<V>,
+    {
+        let entry = match self.map.get_mut(key) {
+            Some(e) => e,
+            None => return 0,
+        };
+
+        match predicate(entry.get_foreground()) {
+            Some(new) => {
+                entry.insert_foreground(new);
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+const SLOT0_PRESENT: u8 = 1 << 0;
+const SLOT1_PRESENT: u8 = 1 << 1;
+const FG_SLOT: u8 = 1 << 2;
+
+/// An entry in the `OverlayMap` that can hold a value in either the foreground,
+/// background, or both layers.
+///
+/// Due to the use of unsafe pointers, this struct's alignment must be
+/// consistent.
+#[repr(C)]
+#[derive(Debug)]
+pub struct Entry<T> {
+    bits: u8,
+    slots: [MaybeUninit<T>; 2],
+}
+
+impl<T> Entry<T> {
+    fn new(val: T) -> Self {
+        Self {
+            bits: SLOT0_PRESENT,
+            slots: [MaybeUninit::new(val), MaybeUninit::uninit()],
+        }
+    }
+
+    #[inline]
+    fn foreground_index(&self) -> usize {
+        ((self.bits & FG_SLOT) >> 2) as usize
+    }
+
+    #[inline]
+    fn background_index(&self) -> usize {
+        self.foreground_index() ^ 1
+    }
+
+    fn get_foreground(&self) -> &T {
+        let idx = self.foreground_index();
+        if self.is_slot_present(idx) {
+            unsafe { self.slots[idx].assume_init_ref() }
+        } else {
+            panic!("Foreground slot is not present");
+        }
+    }
+
+    fn get_background(&self) -> Option<&T> {
+        let idx = self.background_index();
+        if self.is_slot_present(idx) {
+            Some(unsafe { self.slots[idx].assume_init_ref() })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn is_slot_present(&self, idx: usize) -> bool {
+        (self.bits & (1 << idx)) != 0
+    }
+
+    /// Push the current foreground into background (if present) by simply toggling bits,
+    /// then flips the FG slot bit so new data can go in the “other” slot.
+    ///
+    /// After this, both slots will be present if FG was present before (so old FG
+    /// remains in the old slot, but we label it ‘background’ now). The actual
+    /// memory never moves.
+    #[inline]
+    pub fn push_fg_to_bg(&mut self) {
+        let bgi = self.background_index();
+
+        // If the background slot is present, drop it to avoid memory leaks
+        if self.is_slot_present(bgi) {
+            unsafe {
+                self.slots[bgi].assume_init_drop();
+            }
+        }
+
+        // Flip the foreground/background logical mapping
+        self.bits |= 1 << bgi;
+        self.bits ^= FG_SLOT;
+    }
+
+    #[inline]
+    fn insert_foreground(&mut self, val: T) {
+        self.push_fg_to_bg();
+        let idx = self.foreground_index();
+        self.slots[idx] = MaybeUninit::new(val);
+        self.bits |= 1 << idx;
+    }
+}
+
+impl<V> Drop for Entry<V> {
+    fn drop(&mut self) {
+        if (self.bits & SLOT0_PRESENT) != 0 {
+            unsafe { self.slots[0].assume_init_drop() };
+        }
+
+        if (self.bits & SLOT1_PRESENT) != 0 {
+            unsafe { self.slots[1].assume_init_drop() };
+        }
     }
 }
 
@@ -286,7 +237,7 @@ mod tests {
     fn insert_and_get_foreground() {
         let mut map = OverlayMap::<&str, i32>::new();
         assert!(map.get(&"key").is_none());
-        map.insert("key", 42);
+        map.insert_swap("key", 42);
         assert_eq!(*map.get(&"key").expect("Entry was just inserted"), 42);
     }
 
@@ -294,14 +245,14 @@ mod tests {
     fn insert_and_get_background() {
         let mut map = OverlayMap::<&str, i32>::new();
         assert!(map.get(&"key").is_none());
-        map.insert("key", 99);
+        map.insert_swap("key", 99);
         assert_eq!(*map.get(&"key").expect("Entry was just inserted"), 99);
     }
 
     #[test]
     fn try_swap_no_change_foreground() {
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert("key", 100);
+        map.insert_swap("key", 100);
 
         // Try swap but do nothing
         map.try_swap(&"key", |old| {
@@ -319,7 +270,7 @@ mod tests {
     #[test]
     fn try_swap_foreground_to_background() {
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert("key", 50);
+        map.insert_swap("key", 50);
         map.try_swap(&"key", |old| if *old == 50 { Some(123) } else { None });
         assert_eq!(*map.get(&"key").expect("Entry should still exist"), 123);
         assert_eq!(
@@ -343,8 +294,8 @@ mod tests {
         // - "bg_key" in background
         // - "absent_key" absent
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert("fg_key", 10);
-        map.insert("bg_key", 20);
+        map.insert_swap("fg_key", 10);
+        map.insert_swap("bg_key", 20);
 
         // Prepare updates:
         // - "fg_key" -> 100
