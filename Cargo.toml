@@ -2,20 +2,22 @@
 name = "overlaymap"
 version = "0.1.0"
 edition = "2024"
+authors = ["James Kingsley <jameslkingsley@icloud.com>"]
+description = "A two-layered map with mutable foreground and immutable background."
+license = "MIT"
+repository = "https://github.com/jameslkingsley/overlaymap"
+documentation = "https://docs.rs/overlaymap"
+homepage = "https://github.com/jameslkingsley/overlaymap"
+readme = "README.md"
+keywords = ["map", "data-structure", "overlay", "two-layer"]
+categories = ["data-structures"]
 
 [[bench]]
-name = "insert"
-harness = false
-
-[[bench]]
-name = "try_swap"
-harness = false
-
-[[bench]]
-name = "extend_swap"
+name = "bench"
 harness = false
 
 [dependencies]
 
 [dev-dependencies]
 criterion = "0.5.1"
+nohash-hasher = "0.2.0"

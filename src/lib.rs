@@ -2,10 +2,12 @@
 //! the foreground layer is mutable and the background layer is immutable.
 
 use std::{
-    collections::{hash_map::RandomState, HashMap},
+    collections::{HashMap, hash_map::RandomState},
     hash::{BuildHasher, Hash},
     mem::MaybeUninit,
 };
+
+// TODO Zero-cost rollback/commits
 
 /// A map with two layers: foreground for recent changes, background for original values.
 ///
@@ -86,7 +88,7 @@ where
     /// - If the key is present in the foreground, the existing value is moved
     ///   to the background and the new value is inserted into the foreground
     /// - If the key is present in the background, the new value is inserted into the foreground
-    pub fn insert_swap(&mut self, key: K, value: V) -> usize {
+    pub fn insert(&mut self, key: K, value: V) -> usize {
         if let Some(entry) = self.map.get_mut(&key) {
             entry.insert_foreground(value);
             1
@@ -99,11 +101,11 @@ where
     /// Extend the map by merging another `HashMap` into it.
     ///
     /// Insertion logic follows the same rules as `insert`.
-    pub fn extend_swap(&mut self, other: HashMap<K, V, S>) -> usize {
+    pub fn extend(&mut self, other: HashMap<K, V, S>) -> usize {
         let mut swaps = 0;
 
         for (key, new) in other {
-            swaps += self.insert_swap(key, new);
+            swaps += self.insert(key, new);
         }
 
         swaps
@@ -165,11 +167,7 @@ impl<T> Entry<T> {
 
     fn get_foreground(&self) -> &T {
         let idx = self.foreground_index();
-        if self.is_slot_present(idx) {
-            unsafe { self.slots[idx].assume_init_ref() }
-        } else {
-            panic!("Foreground slot is not present");
-        }
+        unsafe { self.slots[idx].assume_init_ref() }
     }
 
     fn get_background(&self) -> Option<&T> {
@@ -190,7 +188,7 @@ impl<T> Entry<T> {
     /// then flips the FG slot bit so new data can go in the “other” slot.
     ///
     /// After this, both slots will be present if FG was present before (so old FG
-    /// remains in the old slot, but we label it ‘background’ now). The actual
+    /// remains in the old slot, but we label it background now). The actual
     /// memory never moves.
     #[inline]
     pub fn push_fg_to_bg(&mut self) {
@@ -237,7 +235,7 @@ mod tests {
     fn insert_and_get_foreground() {
         let mut map = OverlayMap::<&str, i32>::new();
         assert!(map.get(&"key").is_none());
-        map.insert_swap("key", 42);
+        map.insert("key", 42);
         assert_eq!(*map.get(&"key").expect("Entry was just inserted"), 42);
     }
 
@@ -245,14 +243,14 @@ mod tests {
     fn insert_and_get_background() {
         let mut map = OverlayMap::<&str, i32>::new();
         assert!(map.get(&"key").is_none());
-        map.insert_swap("key", 99);
+        map.insert("key", 99);
         assert_eq!(*map.get(&"key").expect("Entry was just inserted"), 99);
     }
 
     #[test]
     fn try_swap_no_change_foreground() {
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert_swap("key", 100);
+        map.insert("key", 100);
 
         // Try swap but do nothing
         map.try_swap(&"key", |old| {
@@ -270,7 +268,7 @@ mod tests {
     #[test]
     fn try_swap_foreground_to_background() {
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert_swap("key", 50);
+        map.insert("key", 50);
         map.try_swap(&"key", |old| if *old == 50 { Some(123) } else { None });
         assert_eq!(*map.get(&"key").expect("Entry should still exist"), 123);
         assert_eq!(
@@ -294,8 +292,8 @@ mod tests {
         // - "bg_key" in background
         // - "absent_key" absent
         let mut map = OverlayMap::<&str, i32>::new();
-        map.insert_swap("fg_key", 10);
-        map.insert_swap("bg_key", 20);
+        map.insert("fg_key", 10);
+        map.insert("bg_key", 20);
 
         // Prepare updates:
         // - "fg_key" -> 100
@@ -307,7 +305,7 @@ mod tests {
         updates.insert("none_key", 300);
 
         // Perform the merge
-        map.extend_swap(updates);
+        map.extend(updates);
 
         // Check that "fg_key" was in foreground, so old value (10) moved to background.
         // New value (100) should be in foreground.
