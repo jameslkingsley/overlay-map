@@ -1,13 +1,13 @@
 [package]
-name = "overlaymap"
+name = "overlay-map"
 version = "0.1.0"
 edition = "2024"
 authors = ["James Kingsley <jameslkingsley@icloud.com>"]
 description = "A two-layered map with mutable foreground and immutable background."
 license = "MIT"
-repository = "https://github.com/jameslkingsley/overlaymap"
-documentation = "https://docs.rs/overlaymap"
-homepage = "https://github.com/jameslkingsley/overlaymap"
+repository = "https://github.com/jameslkingsley/overlay-map"
+documentation = "https://docs.rs/overlay-map"
+homepage = "https://github.com/jameslkingsley/overlay-map"
 readme = "README.md"
 keywords = ["map", "data-structure", "overlay", "two-layer"]
 categories = ["data-structures"]
@@ -21,3 +21,4 @@ harness = false
 [dev-dependencies]
 criterion = "0.5.1"
 nohash-hasher = "0.2.0"
+rand = "0.9.0"

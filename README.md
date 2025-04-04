@@ -1,13 +1,14 @@
-# overlaymap
+# overlay-map
 
-**overlaymap** is a two-layered map data structure for Rust that allows for non-destructive updates by maintaining both a **foreground** (mutable) and a **background** (read-only) value layer for each key.
+**overlay-map** is a two-layered map data structure for Rust that allows for non-destructive updates by maintaining both a **foreground** (mutable) and a **background** (read-only) value layer for each key.
 
 It’s designed for scenarios where you want to:
 - Apply temporary or just-in-time changes without mutating original data.
 - Implement overlays, deltas, rollback-able changes, or speculative state changes.
 - Avoid cloning/copying values unnecessarily on update.
 
-> ⚠️ **Work in progress**: This library is still evolving. Planned features include rollback support and a wider API.
+> ⚠️ **Work in progress**: This library is still evolving. Planned features
+> include thread-safe version, rollback support, and a wider API.
 
 ## 📦 Features
 
@@ -22,29 +23,46 @@ It’s designed for scenarios where you want to:
 ## 🚀 Example
 
 ```rust
-use overlaymap::OverlayMap;
+use overlay_map::OverlayMap;
 
-let mut map = OverlayMap::new();
+#[derive(Debug, Clone, PartialEq)]
+struct QuantumBit {
+    collapsed: bool,
+    value: Option<bool>,
+}
 
-map.insert("name", "Alice");
-assert_eq!(map.get(&"name"), Some(&"Alice"));
+/// Simulates measurement collapse
+fn collapse(mut qbit: QuantumBit) -> QuantumBit {
+    qbit.collapsed = true;
+    qbit.value = Some(rand::random());
+    qbit
+}
 
-// Update the value; old one is pushed to background
-map.insert("name", "Bob");
-assert_eq!(map.get(&"name"), Some(&"Bob"));
-assert_eq!(map.get_background(&"name"), Some(&"Alice"));
+fn main() {
+    let mut qstate = OverlayMap::<&str, QuantumBit>::new();
 
-// Conditionally swap with a predicate
-map.try_swap(&"name", |current| {
-    if *current == "Bob" {
-        Some("Charlie")
-    } else {
-        None
-    }
-});
+    // Push an uncollapsed qubit
+    qstate.push(
+        "qbit_1",
+        QuantumBit {
+            collapsed: false,
+            value: None,
+        },
+    );
 
-assert_eq!(map.get(&"name"), Some(&"Charlie"));
-assert_eq!(map.get_background(&"name"), Some(&"Bob"));
+    // Observe the qubit: only collapse if it's not already
+    let did_observe = qstate.push_if(&"qbit_1", |current| {
+        if current.collapsed {
+            None // already collapsed, don't change
+        } else {
+            Some(collapse(current.clone())) // clone *only* if needed
+        }
+    });
+
+    println!("Was observed?       {}", did_observe);
+    println!("After observation:  {:?}", qstate.fg(&"qbit_1"));
+    println!("Before observation: {:?}", qstate.bg(&"qbit_1"));
+}
 ```
 
 ## 🧠 Why?
@@ -54,14 +72,6 @@ This is useful when:
 - You're doing **speculative updates** or **rollback systems** (planned).
 - You need **non-destructive overlays** (e.g. config layering, versioning, etc).
 - You want to avoid expensive cloning when replacing data.
-
-## 🔨 API Summary
-
-- `insert(key, value)` — Inserts a value. Pushes existing foreground into background.
-- `get(key)` / `get_foreground(key)` — Get the current value.
-- `get_background(key)` — Get the previous value if available.
-- `try_swap(key, predicate)` — Conditionally replace foreground based on the current value.
-- `extend(other_map)` — Merge another `HashMap` into this one with the same semantics.
 
 ## 📚 Documentation
 
@@ -76,5 +86,6 @@ MIT
 
 Contributions, bug reports, and feature requests welcome.
 Planned areas of work:
+- Thread-safe version
 - Rollback support
 - More expressive APIs

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nohash_hasher::BuildNoHashHasher;
-use overlaymap::OverlayMap;
+use overlay_map::OverlayMap;
 
 type Hasher = BuildNoHashHasher<u64>;
 
@@ -16,17 +16,17 @@ fn overlaymap(c: &mut Criterion) {
                 let key = i;
                 i += 1;
                 let mut map = OverlayMap::<u64, u64, Hasher>::new();
-                map.insert(key, key);
+                map.push(key, key);
                 (map, key)
             },
             |(map, key)| {
-                black_box(map.get(black_box(&key)));
+                black_box(map.fg(black_box(&key)));
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
-    g.bench_function("new_insert", |b| {
+    g.bench_function("push_new", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
@@ -36,60 +36,60 @@ fn overlaymap(c: &mut Criterion) {
                 (map, key)
             },
             |(mut map, key)| {
-                black_box(map.insert(black_box(key), black_box(key)));
+                black_box(map.push(black_box(key), black_box(key)));
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
-    g.bench_function("swap_insert", |b| {
+    g.bench_function("push_existing", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
                 let key = i;
                 i += 1;
                 let mut map = OverlayMap::<u64, u64, Hasher>::new();
-                map.insert(key, key);
+                map.push(key, key);
                 (map, key)
             },
             |(mut map, key)| {
-                black_box(map.insert(black_box(key), black_box(key + 1)));
+                black_box(map.push(black_box(key), black_box(key + 1)));
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
-    g.bench_function("extend_swap", |b| {
+    g.bench_function("overlay", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
                 let key = i;
                 i += 1;
                 let mut map = OverlayMap::<u64, u64, Hasher>::new();
-                map.insert(key, key);
+                map.push(key, key);
                 let mut other = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 other.insert(key, key);
                 (map, other)
             },
             |(mut map, other)| {
-                black_box(map.extend(black_box(other)));
+                black_box(map.overlay(black_box(other)));
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
-    g.bench_function("try_swap", |b| {
+    g.bench_function("push_if", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
                 let key = i;
                 i += 1;
                 let mut map = OverlayMap::<u64, u64, Hasher>::new();
-                map.insert(key, key);
+                map.push(key, key);
                 (map, key)
             },
             |(mut map, key)| {
-                black_box(map.try_swap(black_box(&key), black_box(|old: &u64| Some(old + 1))));
+                black_box(map.push_if(black_box(&key), black_box(|old: &u64| Some(old + 1))));
             },
             criterion::BatchSize::SmallInput,
         );
@@ -118,7 +118,7 @@ fn baseline(c: &mut Criterion) {
         );
     });
 
-    g.bench_function("new_insert", |b| {
+    g.bench_function("push_new", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
@@ -134,7 +134,7 @@ fn baseline(c: &mut Criterion) {
         );
     });
 
-    g.bench_function("swap_insert", |b| {
+    g.bench_function("push_existing", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
@@ -151,7 +151,7 @@ fn baseline(c: &mut Criterion) {
         );
     });
 
-    g.bench_function("extend_swap", |b| {
+    g.bench_function("overlay", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
