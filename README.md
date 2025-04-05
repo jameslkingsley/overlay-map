@@ -1,77 +1,75 @@
 # overlay-map
 
-**overlay-map** is a two-layered map data structure for Rust that allows for non-destructive updates by maintaining both a **foreground** (mutable) and a **background** (read-only) value layer for each key.
+**overlay-map** is a two-layered map data structure for Rust that tracks **current** and **previous** values for each key — with zero-clone, in-place state transitions.
 
-It’s designed for scenarios where you want to:
-- Apply temporary or just-in-time changes without mutating original data.
-- Implement overlays, deltas, rollback-able changes, or speculative state changes.
-- Avoid cloning/copying values unnecessarily on update.
+It provides `OverlayMap<K, V>`, a map where each value is an `Overlay<V>`: a compact two-slot container that allows pushing, swapping, and pulling values without cloning or heap allocation.
 
-> ⚠️ **Work in progress**: This library is still evolving. Planned features
-> include thread-safe version, rollback support, and a wider API.
+> ⚠️ **Work in progress**: The library is still evolving.
 
 ## 📦 Features
 
+- ✅ **In-place, zero-cost value updates**
 - ✅ Foreground and background storage per key
-- ✅ On insert, the old foreground is pushed to background (only **one** previous value is retained — not a full history)
-- ✅ If a key exists, its foreground is **always** present — no fallback logic is required during reads
-- ✅ Zero-cost value pushing (via in-place pointer tricks)
-- ✅ No cloning required on push
-- ✅ Optional conditional pushes (`push_if`)
-- ✅ Extendable from other maps
+- ✅ On `push`, the current foreground is moved to background
+- ✅ No heap allocation or cloning for updates
+- ✅ Conditional updates (`push_if`)
+- ✅ Automatic removal when entries become empty
+- ✅ `Overlay<T>` usable independently from the map
 
-## 🚀 Example
+## 🧠 Core types
+
+### `OverlayMap<K, V>`
+
+A map-like wrapper for managing per-key two-layered state.
+
+### `Overlay<T>`
+
+A standalone container that tracks two versions of a value:
+- `fg` → the current value
+- `bg` → the previous value (optional)
+
+Uses zero-copy, branchless slot flipping via raw memory and bitflags.
+
+## 🚀 Example: Revolving Door of Values
 
 ```rust
-use overlay_map::OverlayMap;
-
-#[derive(Debug, Clone, PartialEq)]
-struct QuantumBit {
-    collapsed: bool,
-    value: Option<bool>,
-}
-
-/// Simulates measurement collapse
-fn collapse(mut qbit: QuantumBit) -> QuantumBit {
-    qbit.collapsed = true;
-    qbit.value = Some(rand::random());
-    qbit
-}
+use overlay_map::Overlay;
 
 fn main() {
-    let mut qstate = OverlayMap::<&str, QuantumBit>::new();
+    let mut door = Overlay::new_fg("Alice");
+    println!("Present: {:?}, {:?}", door.fg(), door.bg());
 
-    // Push an uncollapsed qubit
-    qstate.push(
-        "qbit_1",
-        QuantumBit {
-            collapsed: false,
-            value: None,
-        },
-    );
-
-    // Observe the qubit: only collapse if it's not already
-    let did_observe = qstate.push_if(&"qbit_1", |current| {
-        if current.collapsed {
-            None // already collapsed, don't change
-        } else {
-            Some(collapse(current.clone())) // clone *only* if needed
+    for name in ["Bob", "Carol", "Dave", "Eve"] {
+        if let Some(evicted) = door.swap(name) {
+            println!("{evicted} left");
         }
-    });
 
-    println!("Was observed?       {}", did_observe);
-    println!("After observation:  {:?}", qstate.fg(&"qbit_1"));
-    println!("Before observation: {:?}", qstate.bg(&"qbit_1"));
+        println!("Present: {:?}, {:?}", door.bg(), door.fg());
+    }
+
+    while let Some(pulled) = door.pull() {
+        println!("{pulled} left");
+    }
+
+    println!("Present: {:?}, {:?}", door.bg(), door.fg());
 }
 ```
 
-## 🧠 Why?
+## 🔬 Internal Design
 
-This is useful when:
-- You want to track *current vs previous* state (not full history).
-- You're doing **speculative updates** or **rollback systems** (planned).
-- You need **non-destructive overlays** (e.g. config layering, versioning, etc).
-- You want to avoid expensive cloning when replacing data.
+- `Overlay<T>` uses `[MaybeUninit<T>; 2]` with a compact bitflag for presence and slot state.
+- No heap allocation, no `Option<T>`, no clone required.
+- Operations like `push`, `pull`, `swap` are in-place and branch-minimal.
+- Designed for **high-throughput**, **zero-cost** data flow and state management.
+
+## 🧠 Why use this?
+
+`overlay-map` is ideal for:
+
+- Managing *current vs previous* state without full history
+- Speculative updates, rollback systems, or caching layers
+- Config overlays, merging, and snapshotting
+- Avoiding unnecessary cloning, allocation, and indirection in hot code paths
 
 ## 📚 Documentation
 
@@ -84,9 +82,4 @@ MIT
 
 ## ✨ Contributing
 
-Contributions, bug reports, and feature requests welcome.
-
-Planned areas of work:
-- Thread-safe version
-- Rollback support
-- More expressive APIs
+Contributions, bug reports, and feature ideas welcome.

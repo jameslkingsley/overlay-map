@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
 use overlay_map::OverlayMap;
 
@@ -54,6 +53,24 @@ fn overlaymap(c: &mut Criterion) {
             },
             |(mut map, key)| {
                 black_box(map.push(black_box(key), black_box(key + 1)));
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    g.bench_function("swap", |b| {
+        let mut i = 0;
+        b.iter_batched(
+            || {
+                let key = i;
+                i += 1;
+                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                map.push(key, key);
+                map.push(key, key + 1);
+                (map, key)
+            },
+            |(mut map, key)| {
+                black_box(map.swap(black_box(key), black_box(key + 2)));
             },
             criterion::BatchSize::SmallInput,
         );
