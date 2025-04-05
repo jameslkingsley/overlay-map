@@ -1,9 +1,9 @@
 [package]
 name = "overlay-map"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["James Kingsley <jameslkingsley@icloud.com>"]
-description = "A two-layered map data structure for Rust that tracks **current** and **previous** values for each key — with zero-clone, in-place state transitions."
+description = "A two-layered map data structure for Rust that tracks current and previous values for each key — with zero-clone, in-place state transitions."
 license = "MIT"
 repository = "https://github.com/jameslkingsley/overlay-map"
 documentation = "https://docs.rs/overlay-map"
