@@ -14,7 +14,7 @@ fn overlaymap(c: &mut Criterion) {
             || {
                 let key = i;
                 i += 1;
-                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                let mut map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 map.push(key, key);
                 (map, key)
             },
@@ -31,7 +31,7 @@ fn overlaymap(c: &mut Criterion) {
             || {
                 let key = i;
                 i += 1;
-                let map = OverlayMap::<u64, u64, Hasher>::new();
+                let map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 (map, key)
             },
             |(mut map, key)| {
@@ -47,7 +47,7 @@ fn overlaymap(c: &mut Criterion) {
             || {
                 let key = i;
                 i += 1;
-                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                let mut map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 map.push(key, key);
                 (map, key)
             },
@@ -64,7 +64,7 @@ fn overlaymap(c: &mut Criterion) {
             || {
                 let key = i;
                 i += 1;
-                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                let mut map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 map.push(key, key);
                 map.push(key, key + 1);
                 (map, key)
@@ -76,20 +76,20 @@ fn overlaymap(c: &mut Criterion) {
         );
     });
 
-    g.bench_function("overlay", |b| {
+    g.bench_function("extend_count", |b| {
         let mut i = 0;
         b.iter_batched(
             || {
                 let key = i;
                 i += 1;
-                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                let mut map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 map.push(key, key);
                 let mut other = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 other.insert(key, key);
                 (map, other)
             },
             |(mut map, other)| {
-                black_box(map.overlay(black_box(other)));
+                black_box(map.extend_count(black_box(other)));
             },
             criterion::BatchSize::SmallInput,
         );
@@ -101,7 +101,7 @@ fn overlaymap(c: &mut Criterion) {
             || {
                 let key = i;
                 i += 1;
-                let mut map = OverlayMap::<u64, u64, Hasher>::new();
+                let mut map = OverlayMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
                 map.push(key, key);
                 (map, key)
             },
@@ -115,80 +115,5 @@ fn overlaymap(c: &mut Criterion) {
     g.finish();
 }
 
-fn baseline(c: &mut Criterion) {
-    let mut g = c.benchmark_group("baseline");
-
-    g.bench_function("get", |b| {
-        let mut i = 0;
-        b.iter_batched(
-            || {
-                let key = i;
-                i += 1;
-                let mut map = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
-                map.insert(key, key);
-                (map, key)
-            },
-            |(map, key)| {
-                black_box(map.get(black_box(&key)));
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-
-    g.bench_function("push_new", |b| {
-        let mut i = 0;
-        b.iter_batched(
-            || {
-                let key = i;
-                i += 1;
-                let map = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
-                (map, key)
-            },
-            |(mut map, key)| {
-                black_box(map.insert(black_box(key), black_box(key)));
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-
-    g.bench_function("push_existing", |b| {
-        let mut i = 0;
-        b.iter_batched(
-            || {
-                let key = i;
-                i += 1;
-                let mut map = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
-                map.insert(key, key);
-                (map, key)
-            },
-            |(mut map, key)| {
-                black_box(map.insert(black_box(key), black_box(key + 1)));
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-
-    g.bench_function("overlay", |b| {
-        let mut i = 0;
-        b.iter_batched(
-            || {
-                let key = i;
-                i += 1;
-                let mut map = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
-                map.insert(key, key);
-                let mut other = HashMap::<u64, u64, Hasher>::with_hasher(Hasher::default());
-                other.insert(key, key);
-                (map, other)
-            },
-            |(mut map, other)| {
-                black_box(map.extend(black_box(other)));
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-
-    g.finish();
-}
-
-criterion_group!(benches, overlaymap, baseline);
+criterion_group!(benches, overlaymap);
 criterion_main!(benches);

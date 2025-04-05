@@ -57,16 +57,21 @@ where
 {
 }
 
+impl<K, V> OverlayMap<K, V, DefaultHashBuilder>
+where
+    K: Eq + Hash,
+{
+    /// Creates a new, empty `OverlayMap` using the default hasher.
+    pub fn new() -> Self {
+        Self::with_hasher(DefaultHashBuilder::default())
+    }
+}
+
 impl<K, V, S> OverlayMap<K, V, S>
 where
     K: Eq + Hash,
     S: BuildHasher + Default,
 {
-    /// Creates a new, empty `OverlayMap` with the default hasher.
-    pub fn new() -> Self {
-        Self::with_hasher(Default::default())
-    }
-
     /// Creates an empty `OverlayMap` with the specified capacity and default hasher.
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_and_hasher(capacity, Default::default())
@@ -315,16 +320,32 @@ where
         }
     }
 
-    /// Overlay multiple values onto the map.
+    /// Extends the map with a sequence of key-value pairs, counting foreground replacements.
     ///
-    /// Each key-value pair is pushed into the foreground layer. If the key was
-    /// already present, the existing foreground value is moved to the
-    /// background. This does not clone or retain old values beyond the
-    /// background layer.
+    /// Each `(K, V)` pair is pushed into the foreground. If a key already exists,
+    /// the current foreground is moved to the background, and the new value becomes
+    /// the new foreground. If the key is new, it is inserted without affecting any background.
     ///
-    /// Returns the number of keys that already existed (i.e. pushes that
-    /// replaced a foreground).
-    pub fn overlay<I>(&mut self, iter: I) -> usize
+    /// This method returns the number of keys that were already present — i.e., how many
+    /// pushes replaced an existing foreground value.
+    ///
+    /// No cloning or heap allocation is performed beyond what's necessary for the `HashMap`.
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::OverlayMap;
+    ///
+    /// let mut map = OverlayMap::new();
+    /// map.push("a", 1);
+    ///
+    /// let replaced = map.extend_count([("a", 2), ("b", 3)]);
+    /// assert_eq!(replaced, 1); // "a" was already present, "b" was new
+    ///
+    /// assert_eq!(map.fg(&"a"), Some(&2));
+    /// assert_eq!(map.bg(&"a"), Some(&1));
+    /// assert_eq!(map.fg(&"b"), Some(&3));
+    /// ```
+    pub fn extend_count<I>(&mut self, iter: I) -> usize
     where
         I: IntoIterator<Item = (K, V)>,
     {
@@ -336,8 +357,85 @@ where
     }
 }
 
+impl<K, V, S> Clone for OverlayMap<K, V, S>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+    S: Clone + BuildHasher,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+        }
+    }
+}
+
+impl<K, V, S> PartialEq for OverlayMap<K, V, S>
+where
+    K: Eq + Hash,
+    V: PartialEq,
+    S: BuildHasher,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.map == other.map
+    }
+}
+
+impl<K, V, S> Eq for OverlayMap<K, V, S>
+where
+    K: Eq + Hash,
+    V: Eq,
+    S: BuildHasher,
+{
+}
+
+impl<K, V, S> Extend<(K, V)> for OverlayMap<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher + Default,
+{
+    /// Inserts each `(K, V)` pair into the map by pushing the value into the foreground layer.
+    ///
+    /// This behaves the same as calling [`push`] for each element in the iterator. If a key
+    /// already exists, the current foreground value is moved to the background, and the
+    /// new value becomes the foreground. If the key is new, it is inserted.
+    ///
+    /// This implementation does **not** return any count of replaced entries — if you need that,
+    /// use [`extend_count`](Self::extend_count) instead.
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::OverlayMap;
+    ///
+    /// let mut map = OverlayMap::new();
+    /// map.extend([("x", 1), ("y", 2)]);
+    ///
+    /// assert_eq!(map.fg(&"x"), Some(&1));
+    /// assert_eq!(map.fg(&"y"), Some(&2));
+    /// ```
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            self.push(k, v);
+        }
+    }
+}
+
+impl<K, V, S> IntoIterator for OverlayMap<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    type Item = (K, Overlay<V>);
+    type IntoIter = hashbrown::hash_map::IntoIter<K, Overlay<V>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.into_iter()
+    }
+}
+
 const SLOT0_PRESENT: u8 = 1 << 0;
 const SLOT1_PRESENT: u8 = 1 << 1;
+const SLOT_MASK: u8 = SLOT0_PRESENT | SLOT1_PRESENT;
 const FG_SLOT: u8 = 1 << 2;
 
 /// A two-layer value container used by [`OverlayMap`] to manage current and historical values.
@@ -375,8 +473,6 @@ const FG_SLOT: u8 = 1 << 2;
 /// assert_eq!(pulled, Some("next"));
 /// assert_eq!(entry.fg(), Some(&"current"));
 /// ```
-///
-/// [`OverlayMap`]: crate::OverlayMap
 #[derive(Debug)]
 pub struct Overlay<T> {
     bits: u8,
@@ -385,6 +481,15 @@ pub struct Overlay<T> {
 
 impl<T> Overlay<T> {
     /// Creates a new `Overlay` with no values.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry: Overlay<&str> = Overlay::new_empty();
+    /// assert!(entry.is_empty());
+    /// assert_eq!(entry.fg(), None);
+    /// assert_eq!(entry.bg(), None);
+    /// ```
     pub fn new_empty() -> Self {
         Self {
             bits: 0,
@@ -393,6 +498,14 @@ impl<T> Overlay<T> {
     }
 
     /// Creates a new `Overlay` with a foreground value and no background.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_fg("fg");
+    /// assert_eq!(entry.fg(), Some(&"fg"));
+    /// assert_eq!(entry.bg(), None);
+    /// ```
     pub fn new_fg(val: T) -> Self {
         Self {
             bits: SLOT0_PRESENT,
@@ -401,6 +514,14 @@ impl<T> Overlay<T> {
     }
 
     /// Creates a new `Overlay` with both foreground and background values.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_both("fg", "bg");
+    /// assert_eq!(entry.fg(), Some(&"fg"));
+    /// assert_eq!(entry.bg(), Some(&"bg"));
+    /// ```
     pub fn new_both(fg: T, bg: T) -> Self {
         Self {
             bits: SLOT0_PRESENT | SLOT1_PRESENT,
@@ -420,6 +541,16 @@ impl<T> Overlay<T> {
     /// # Returns
     /// - `Some(&T)` if the foreground slot is initialized
     /// - `None` if the foreground slot is uninitialized
+    ///
+    /// ```
+    /// use overlay_map::OverlayMap;
+    ///
+    /// let mut map = OverlayMap::new();
+    /// map.push("x", 10);
+    /// map.push("x", 20);
+    /// assert_eq!(map.fg(&"x"), Some(&20));
+    /// assert_eq!(map.bg(&"x"), Some(&10));
+    /// ```
     #[inline]
     pub fn fg(&self) -> Option<&T> {
         let idx = self.fg_index();
@@ -439,8 +570,13 @@ impl<T> Overlay<T> {
     ///
     /// Use [`fg`](Self::fg) if you are not certain the slot is populated.
     ///
-    /// # Panics
-    /// Never panics, but causes UB if the foreground slot is not present.
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_both("fg", "bg");
+    /// assert_eq!(entry.fg_unchecked(), &"fg");
+    /// assert_eq!(entry.bg_unchecked(), &"bg");
+    /// ```
     #[inline]
     pub fn fg_unchecked(&self) -> &T {
         let idx = self.fg_index();
@@ -450,6 +586,16 @@ impl<T> Overlay<T> {
     /// Returns a reference to the background value, if present.
     ///
     /// Returns `Some(&T)` only if the background slot is initialized.
+    ///
+    /// ```
+    /// use overlay_map::OverlayMap;
+    ///
+    /// let mut map = OverlayMap::new();
+    /// map.push("x", 10);
+    /// map.push("x", 20);
+    /// assert_eq!(map.fg(&"x"), Some(&20));
+    /// assert_eq!(map.bg(&"x"), Some(&10));
+    /// ```
     #[inline]
     pub fn bg(&self) -> Option<&T> {
         let idx = self.bg_index();
@@ -467,6 +613,14 @@ impl<T> Overlay<T> {
     /// will cause **undefined behavior**.
     ///
     /// Prefer [`bg`](Self::bg) if you're unsure whether the background is set.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_both("fg", "bg");
+    /// assert_eq!(entry.fg_unchecked(), &"fg");
+    /// assert_eq!(entry.bg_unchecked(), &"bg");
+    /// ```
     #[inline]
     pub fn bg_unchecked(&self) -> &T {
         let idx = self.bg_index();
@@ -477,9 +631,111 @@ impl<T> Overlay<T> {
     ///
     /// This is used to determine whether the entry contains any values
     /// at all. It does not consider which slot is foreground or background.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_fg("fg");
+    /// assert!(!entry.is_empty());
+    /// entry.pull();
+    /// assert!(entry.is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        (self.bits & (SLOT0_PRESENT | SLOT1_PRESENT)) == 0
+        (self.bits & SLOT_MASK) == 0
+    }
+
+    /// Returns `true` if both foreground and background values are currently present.
+    ///
+    /// This is useful for determining whether [`clear_unchecked`](Self::clear_unchecked)
+    /// is safe to call.
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("a", "b");
+    /// assert!(entry.is_full());
+    ///
+    /// entry.pull();
+    /// assert!(!entry.is_full()); // background promoted, only one value remains
+    /// ```
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        (self.bits & SLOT_MASK) == SLOT_MASK
+    }
+
+    /// Clears the overlay, dropping any foreground and background values.
+    ///
+    /// This is the most efficient way to reset the overlay to an empty state. It
+    /// avoids value movement or promotion and directly drops the contents of both
+    /// slots (if present). After calling `clear`, the overlay will report as empty,
+    /// and both `fg()` and `bg()` will return `None`.
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("a", "b");
+    /// assert_eq!(entry.fg(), Some(&"a"));
+    /// assert_eq!(entry.bg(), Some(&"b"));
+    ///
+    /// entry.clear();
+    ///
+    /// assert_eq!(entry.fg(), None);
+    /// assert_eq!(entry.bg(), None);
+    /// assert!(entry.is_empty());
+    /// ```
+    #[inline]
+    pub fn clear(&mut self) {
+        if (self.bits & SLOT0_PRESENT) != 0 {
+            unsafe { self.slots[0].assume_init_drop() };
+        }
+        if (self.bits & SLOT1_PRESENT) != 0 {
+            unsafe { self.slots[1].assume_init_drop() };
+        }
+        self.bits = 0;
+    }
+
+    /// Clears the overlay without checking which slots are present.
+    ///
+    /// This is an **unsafe**, ultra-fast variant of [`Overlay::clear`] that skips
+    /// all internal presence checks. It will **unconditionally drop** both slots,
+    /// regardless of whether they are actually initialized.
+    ///
+    /// # Safety
+    ///
+    /// You must guarantee that both the **foreground** and **background** values
+    /// are currently present in the overlay. Calling this when either layer is
+    /// missing will result in **undefined behavior**, such as memory corruption
+    /// or double-drop.
+    ///
+    /// This is intended for use in performance-critical contexts where you already
+    /// know the exact slot state — for example, if you've just cloned from a known
+    /// full overlay, or you're clearing a batch of overlays all known to be full.
+    ///
+    /// For a safe version, use [`clear`](Self::clear).
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("a", "b");
+    /// entry.clear_unchecked(); // caller guarantees both slots are present
+    ///
+    /// assert!(entry.is_empty());
+    /// ```
+    ///
+    /// # See Also
+    /// - [`Overlay::clear`] — safe version with slot checks
+    /// - [`Overlay::is_empty`] — to check for emptiness before clearing
+    #[inline]
+    pub fn clear_unchecked(&mut self) {
+        unsafe {
+            self.slots[0].assume_init_drop();
+            self.slots[1].assume_init_drop();
+        }
+        self.bits = 0;
     }
 
     /// Push a value into the foreground layer, preserving the previous foreground in the background.
@@ -494,8 +750,10 @@ impl<T> Overlay<T> {
     /// # Example
     /// ```
     /// use overlay_map::Overlay;
+    ///
     /// let mut entry = Overlay::new_fg("a");
     /// entry.push("b");
+    ///
     /// assert_eq!(entry.fg(), Some(&"b"));
     /// assert_eq!(entry.bg(), Some(&"a"));
     /// ```
@@ -517,8 +775,10 @@ impl<T> Overlay<T> {
     /// # Example
     /// ```
     /// use overlay_map::Overlay;
+    ///
     /// let mut entry = Overlay::new_both("a", "b");
     /// let pulled = entry.pull();
+    ///
     /// assert_eq!(pulled, Some("a"));
     /// assert_eq!(entry.fg(), Some(&"b")); // background promoted
     /// ```
@@ -542,6 +802,15 @@ impl<T> Overlay<T> {
     /// in undefined behavior.
     ///
     /// See [`Self::pull`] for a safe alternative.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("fg", "bg");
+    /// let pulled = entry.pull_unchecked();
+    /// assert_eq!(pulled, "fg");
+    /// assert_eq!(entry.fg(), Some(&"bg"));
+    /// ```
     #[inline]
     pub fn pull_unchecked(&mut self) -> T {
         let fgi = self.fg_index();
@@ -563,8 +832,10 @@ impl<T> Overlay<T> {
     /// # Example
     /// ```
     /// use overlay_map::Overlay;
+    ///
     /// let mut entry = Overlay::new_both("a", "b");
     /// let evicted = entry.swap("c");
+    ///
     /// assert_eq!(evicted, Some("b"));
     /// assert_eq!(entry.fg(), Some(&"c"));
     /// assert_eq!(entry.bg(), Some(&"a"));
@@ -581,6 +852,47 @@ impl<T> Overlay<T> {
             self.push(val);
             None
         }
+    }
+
+    /// Get an iterator over the foreground and background values.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_both("fg", "bg");
+    /// let values: Vec<_> = entry.iter().cloned().collect();
+    /// assert_eq!(values, vec!["fg", "bg"]);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.fg().into_iter().chain(self.bg())
+    }
+
+    /// Flips the foreground and background layers.
+    ///
+    /// This operation swaps the logical roles of the two slots:
+    ///
+    /// - The foreground becomes the background
+    /// - The background becomes the foreground
+    ///
+    /// This does **not** move or clone any values. It simply toggles an internal
+    /// bit to reinterpret which slot is considered "foreground" and which is "background".
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("a", "b");
+    /// assert_eq!(entry.fg(), Some(&"a"));
+    /// assert_eq!(entry.bg(), Some(&"b"));
+    ///
+    /// entry.flip();
+    ///
+    /// assert_eq!(entry.fg(), Some(&"b"));
+    /// assert_eq!(entry.bg(), Some(&"a"));
+    /// ```
+    #[inline]
+    pub fn flip(&mut self) {
+        self.bits ^= FG_SLOT;
     }
 
     #[inline]
@@ -614,13 +926,47 @@ impl<T> Overlay<T> {
         }
         self.flip();
     }
+}
 
-    /// Flip the foreground/background logical mapping
-    #[inline]
-    fn flip(&mut self) {
-        self.bits ^= FG_SLOT;
+impl<T> Default for Overlay<T> {
+    fn default() -> Self {
+        Self::new_empty()
     }
 }
+
+impl<T> From<T> for Overlay<T> {
+    fn from(value: T) -> Self {
+        Self::new_fg(value)
+    }
+}
+
+impl<T: Clone> Clone for Overlay<T> {
+    fn clone(&self) -> Self {
+        let mut clone = Self::new_empty();
+        clone.bits = self.bits;
+
+        if self.is_slot_present(0) {
+            clone.slots[0] = MaybeUninit::new(unsafe { self.slots[0].assume_init_ref().clone() });
+        }
+
+        if self.is_slot_present(1) {
+            clone.slots[1] = MaybeUninit::new(unsafe { self.slots[1].assume_init_ref().clone() });
+        }
+
+        clone
+    }
+}
+
+impl<T: PartialEq> PartialEq for Overlay<T> {
+    fn eq(&self, other: &Self) -> bool {
+        if (self.bits & SLOT_MASK) != (other.bits & SLOT_MASK) {
+            return false;
+        }
+        self.fg() == other.fg() && self.bg() == other.bg()
+    }
+}
+
+impl<T: Eq> Eq for Overlay<T> {}
 
 impl<V> Drop for Overlay<V> {
     fn drop(&mut self) {
@@ -631,6 +977,36 @@ impl<V> Drop for Overlay<V> {
         if (self.bits & SLOT1_PRESENT) != 0 {
             unsafe { self.slots[1].assume_init_drop() };
         }
+    }
+}
+
+pub struct OverlayIntoIter<T> {
+    overlay: Overlay<T>,
+}
+
+impl<T> Iterator for OverlayIntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.overlay.pull()
+    }
+}
+
+impl<T> IntoIterator for Overlay<T> {
+    type Item = T;
+    type IntoIter = OverlayIntoIter<T>;
+
+    /// Creates an iterator over the values in the overlay.
+    ///
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let entry = Overlay::new_both("fg", "bg");
+    /// let values: Vec<_> = entry.into_iter().collect();
+    /// assert_eq!(values, vec!["fg", "bg"]);
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        OverlayIntoIter { overlay: self }
     }
 }
 
@@ -755,7 +1131,7 @@ mod tests {
         let updates = vec![("fg_key", 100), ("bg_key", 200), ("none_key", 300)];
 
         // Perform the merge
-        map.overlay(updates);
+        map.extend_count(updates);
 
         // Check that "fg_key" was in foreground, so old value (10) moved to background.
         // New value (100) should be in foreground.
