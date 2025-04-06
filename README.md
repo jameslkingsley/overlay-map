@@ -75,10 +75,15 @@ fn main() {
 
 These benchmarks measure the performance of the `push` operation in both the `Overlay<T>` and a conventional tuple-based implementation.
 
-| Overlay Implementation | Tuple Implementation |
-|------------------------|----------------------|
-| ![Overlay PDF](./assets/overlay_pdf.svg) | ![Tuple PDF](./assets/tuple_pdf.svg) |
-| ![Overlay Regression](./assets/overlay_regression.svg) | ![Tuple Regression](./assets/tuple_regression.svg) |
+### 📊 Overlay Implementation
+
+![Overlay PDF](./assets/overlay_pdf.svg)
+![Overlay Regression](./assets/overlay_regression.svg)
+
+### 📊 Tuple Implementation
+
+![Tuple PDF](./assets/tuple_pdf.svg)
+![Tuple Regression](./assets/tuple_regression.svg)
 
 ### 📊 Interpretation
 
