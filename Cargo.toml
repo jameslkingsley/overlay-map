@@ -12,14 +12,10 @@ readme = "README.md"
 categories = ["data-structures"]
 keywords = [
   "map",
-  "data-structure",
+  "push-pull",
   "overlay",
-  "in-place",
   "zero-copy",
-  "delta",
-  "dual-layer",
   "no-alloc",
-  "transient"
 ]
 
 [[bench]]
