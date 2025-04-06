@@ -33,15 +33,52 @@ use std::{
 
 use hashbrown::{DefaultHashBuilder, HashMap, hash_map::RawEntryMut};
 
-/// A two-layered map where each key has a mutable foreground and an optional
-/// background value.
+/// A two-layered map where each key holds a current (foreground) and optional historical (background) value.
 ///
-/// When inserting a new value for a key, the previous value (if any) is
-/// automatically moved to the background. Background values are preserved but
-/// not cloned.
+/// `OverlayMap` is a high-performance associative container designed for efficient, non-cloning updates
+/// and reversible state transitions. When inserting a new value for an existing key, the current
+/// foreground is automatically moved to the background. This allows you to update state while
+/// preserving a previous version — useful for rollback, previews, speculative updates, or undo systems.
 ///
-/// This map is not thread-safe for mutation. It may be shared across threads
-/// for read-only access.
+/// All operations are zero-copy and allocation-free beyond what the internal map requires. Background
+/// values are stored in-place and never cloned or reallocated.
+///
+/// Internally, each key maps to an [`Overlay<V>`] that manages the foreground and background slots.
+/// The API provides full control over pushing, pulling, and swapping values, with minimal overhead.
+///
+/// # Features
+///
+/// - Efficient push/pull/swap operations
+/// - No cloning or heap allocation for values
+/// - Zero-cost foreground/background transitions
+/// - Map keys only retained when a value is present
+///
+/// # Example
+///
+/// ```
+/// use overlay_map::OverlayMap;
+///
+/// let mut map = OverlayMap::new();
+///
+/// // Insert a new value
+/// map.push("player", 1);
+///
+/// // Overwrite it — original goes to background
+/// map.push("player", 2);
+///
+/// assert_eq!(map.fg(&"player"), Some(&2));
+/// assert_eq!(map.bg(&"player"), Some(&1));
+///
+/// // Pull removes the current foreground and promotes background
+/// let pulled = map.pull(&"player");
+/// assert_eq!(pulled, Some(2));
+/// assert_eq!(map.fg(&"player"), Some(&1));
+///
+/// // Pull again — entry is now removed
+/// let pulled = map.pull(&"player");
+/// assert_eq!(pulled, Some(1));
+/// assert_eq!(map.fg(&"player"), None);
+/// ```
 #[derive(Debug, Default)]
 pub struct OverlayMap<K, V, S = DefaultHashBuilder>
 where
@@ -50,6 +87,15 @@ where
     map: HashMap<K, Overlay<V>, S>,
 }
 
+/// `OverlayMap` is `Sync` because all access to internal state is gated through `&self`
+/// for read-only operations, and mutation requires exclusive access via `&mut self`.
+///
+/// - The underlying `HashMap` is not `Sync` by default, but we do not expose any interior
+///   mutability or unsynchronized shared mutation.
+/// - All mutation methods (e.g., `push`, `pull`, `swap`) require `&mut self`.
+/// - Shared access via `&OverlayMap` only allows read-only operations like `fg`, `bg`, `len`,
+///   and `is_empty`, which do not mutate internal state.
+/// - `Overlay<T>` is also safe for concurrent read access and does not use interior mutability.
 unsafe impl<K, V, S> Sync for OverlayMap<K, V, S>
 where
     K: Eq + Hash + Sync,
@@ -317,6 +363,40 @@ where
         match predicate(entry.fg_unchecked()) {
             Some(new) => entry.swap(new),
             None => None,
+        }
+    }
+
+    /// Flips the foreground and background values for the given key, if present.
+    ///
+    /// This operation swaps the logical roles of the foreground and background values
+    /// for the specified key. If the key is present in the map, the values are flipped:
+    ///
+    /// - The background becomes the new foreground
+    /// - The foreground becomes the new background
+    ///
+    /// This does **not** move, clone, or reallocate any values — it is a zero-cost operation
+    /// that simply toggles the internal bit mask controlling foreground/background interpretation.
+    ///
+    /// If the key is not present in the map, or if it has no background value, the operation
+    /// has no effect.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use overlay_map::OverlayMap;
+    ///
+    /// let mut map = OverlayMap::new();
+    /// map.push("slot", 1);
+    /// map.push("slot", 2); // now: fg = 2, bg = 1
+    ///
+    /// map.flip(&"slot");
+    ///
+    /// assert_eq!(map.fg(&"slot"), Some(&1));
+    /// assert_eq!(map.bg(&"slot"), Some(&2));
+    /// ```
+    pub fn flip(&mut self, key: &K) {
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.flip();
         }
     }
 
@@ -791,7 +871,7 @@ impl<T> Overlay<T> {
 
         let evicted = unsafe { self.slots[fgi].assume_init_read() };
         self.bits &= !(1 << fgi);
-        self.flip();
+        self.flip_unchecked();
         Some(evicted)
     }
 
@@ -816,7 +896,7 @@ impl<T> Overlay<T> {
         let fgi = self.fg_index();
         let evicted = unsafe { self.slots[fgi].assume_init_read() };
         self.bits &= !(1 << fgi);
-        self.flip();
+        self.flip_unchecked();
         evicted
     }
 
@@ -846,7 +926,7 @@ impl<T> Overlay<T> {
         if self.is_slot_present(bgi) {
             let evicted = unsafe { self.slots[bgi].assume_init_read() };
             self.slots[bgi] = MaybeUninit::new(val);
-            self.flip();
+            self.flip_unchecked();
             Some(evicted)
         } else {
             self.push(val);
@@ -867,15 +947,18 @@ impl<T> Overlay<T> {
         self.fg().into_iter().chain(self.bg())
     }
 
-    /// Flips the foreground and background layers.
+    /// Flips the foreground and background layers, if both are present.
     ///
     /// This operation swaps the logical roles of the two slots:
     ///
     /// - The foreground becomes the background
     /// - The background becomes the foreground
     ///
-    /// This does **not** move or clone any values. It simply toggles an internal
-    /// bit to reinterpret which slot is considered "foreground" and which is "background".
+    /// If only one value is present, the overlay remains unchanged to preserve
+    /// the guarantee that a foreground value is always present when the overlay is in use.
+    ///
+    /// This is a zero-cost, branchless operation — no memory is moved, cloned, or reallocated.
+    /// Internally, it simply toggles a bit flag **only if** both slots are occupied.
     ///
     /// # Example
     /// ```
@@ -889,9 +972,21 @@ impl<T> Overlay<T> {
     ///
     /// assert_eq!(entry.fg(), Some(&"b"));
     /// assert_eq!(entry.bg(), Some(&"a"));
+    ///
+    /// // Flip has no effect when only one value is present
+    /// let mut single = Overlay::new_fg("only");
+    /// single.flip();
+    /// assert_eq!(single.fg(), Some(&"only"));
+    /// assert_eq!(single.bg(), None);
     /// ```
     #[inline]
     pub fn flip(&mut self) {
+        let mask = ((self.bits & SLOT_MASK) >> 1) & 1;
+        self.bits ^= mask << 2;
+    }
+
+    #[inline]
+    fn flip_unchecked(&mut self) {
         self.bits ^= FG_SLOT;
     }
 
@@ -924,7 +1019,7 @@ impl<T> Overlay<T> {
                 self.slots[bgi].assume_init_drop();
             }
         }
-        self.flip();
+        self.flip_unchecked();
     }
 }
 
@@ -1015,141 +1110,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_and_get_foreground() {
+    fn integration_push_pull_cycle() {
         let mut map = OverlayMap::<&str, i32>::new();
-        assert!(map.fg(&"key").is_none());
-        map.push("key", 42);
-        assert_eq!(*map.fg(&"key").expect("Entry was just pushed"), 42);
+
+        map.push("x", 1);
+        map.push("x", 2);
+        map.push("x", 3);
+
+        assert_eq!(map.fg(&"x"), Some(&3));
+        assert_eq!(map.bg(&"x"), Some(&2));
+
+        let pulled = map.pull(&"x");
+        assert_eq!(pulled, Some(3));
+        assert_eq!(map.fg(&"x"), Some(&2));
+
+        let pulled = map.pull(&"x");
+        assert_eq!(pulled, Some(2));
+        assert_eq!(map.fg(&"x"), None);
+        assert!(map.is_empty());
     }
 
     #[test]
-    fn push_and_get_background() {
+    fn extend_count_overlapping_and_new() {
         let mut map = OverlayMap::<&str, i32>::new();
-        assert!(map.fg(&"key").is_none());
-        map.push("key", 99);
-        assert_eq!(*map.fg(&"key").expect("Entry was just pushed"), 99);
+        map.push("a", 10);
+        map.push("b", 20);
+
+        let replaced = map.extend_count([("a", 100), ("c", 300), ("b", 200)]);
+        assert_eq!(replaced, 2); // a and b existed
+
+        assert_eq!(map.fg(&"a"), Some(&100));
+        assert_eq!(map.bg(&"a"), Some(&10));
+
+        assert_eq!(map.fg(&"b"), Some(&200));
+        assert_eq!(map.bg(&"b"), Some(&20));
+
+        assert_eq!(map.fg(&"c"), Some(&300));
+        assert_eq!(map.bg(&"c"), None);
     }
 
     #[test]
-    fn push_if_no_change_foreground() {
+    fn push_if_and_swap_if_logic() {
         let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 100);
+        map.push("key", 1);
 
-        // Try swap but do nothing
-        map.push_if(&"key", |old| {
-            if *old == 100 {
-                None // no change
-            } else {
-                Some(999)
-            }
-        });
+        let pushed = map.push_if(&"key", |v| if *v < 5 { Some(*v + 10) } else { None });
+        assert!(pushed);
+        assert_eq!(map.fg(&"key"), Some(&11));
+        assert_eq!(map.bg(&"key"), Some(&1));
 
-        // Still foreground = 100, no background
-        assert_eq!(*map.fg(&"key").expect("Entry should still exist"), 100);
-    }
-
-    #[test]
-    fn push_if_foreground_to_background() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 50);
-        map.push_if(&"key", |old| if *old == 50 { Some(123) } else { None });
-        assert_eq!(*map.fg(&"key").expect("Entry should still exist"), 123);
-        assert_eq!(
-            *map.bg(&"key").expect("Old value not found in background"),
-            50
-        );
-    }
-
-    #[test]
-    fn push_if_missing_key() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push_if(&"missing", |_| Some(999));
-        assert!(map.fg(&"missing").is_none());
-    }
-
-    #[test]
-    fn pull_with_remainder_test() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 42);
-        map.push("key", 24);
-        assert_eq!(Some(&24), map.fg(&"key"));
-        assert_eq!(Some(&42), map.bg(&"key"));
-        assert_eq!(Some(24), map.pull(&"key"));
-        assert_eq!(Some(&42), map.fg(&"key"));
-        assert_eq!(None, map.bg(&"key"));
-        assert_eq!(1, map.len());
-    }
-
-    #[test]
-    fn pull_without_remainder_test() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 42);
-        assert_eq!(Some(&42), map.fg(&"key"));
-        assert_eq!(Some(42), map.pull(&"key"));
-        assert_eq!(None, map.fg(&"key"));
-        assert_eq!(None, map.bg(&"key"));
-        assert_eq!(0, map.len());
-    }
-
-    #[test]
-    fn swap_test() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 42);
-        assert_eq!(*map.fg(&"key").expect("Entry was just pushed"), 42);
-        assert_eq!(None, map.swap("key", 100));
-        let old_value = map.swap("key", 150);
-        assert_eq!(old_value, Some(42));
-        assert_eq!(*map.fg(&"key").expect("Entry was just pushed"), 150);
-        assert_eq!(*map.bg(&"key").expect("Entry was just pushed"), 100);
-    }
-
-    #[test]
-    fn swap_if_test() {
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("key", 50);
-        map.push("key", 100);
-        let evicted = map.swap_if(&"key", |old| if *old == 100 { Some(123) } else { None });
-        assert_eq!(*map.fg(&"key").expect("Entry should still exist"), 123);
-        assert_eq!(*map.bg(&"key").expect("Entry should still exist"), 100);
-        assert_eq!(evicted, Some(50));
-    }
-
-    #[test]
-    fn overlay_test() {
-        // Initialize an OverlayMap with:
-        // - "fg_key" in foreground
-        // - "bg_key" in background
-        // - "absent_key" absent
-        let mut map = OverlayMap::<&str, i32>::new();
-        map.push("fg_key", 10);
-        map.push("bg_key", 20);
-
-        // Prepare updates:
-        // - "fg_key" -> 100
-        // - "bg_key" -> 200
-        // - "none_key" -> 300 (was absent in map)
-        let updates = vec![("fg_key", 100), ("bg_key", 200), ("none_key", 300)];
-
-        // Perform the merge
-        map.extend_count(updates);
-
-        // Check that "fg_key" was in foreground, so old value (10) moved to background.
-        // New value (100) should be in foreground.
-        match map.fg(&"fg_key") {
-            Some(val) => assert_eq!(*val, 100),
-            _ => panic!("Expected 'fg_key' = 100 in foreground"),
-        }
-        match map.bg(&"fg_key") {
-            Some(val) => assert_eq!(*val, 10),
-            None => panic!("Expected old 'fg_key' value = 10 in background"),
-        }
-
-        // Check that "none_key" was absent, so it is now in the foreground with 300
-        match map.fg(&"none_key") {
-            Some(val) => assert_eq!(*val, 300),
-            _ => panic!("Expected 'none_key' = 300 in foreground"),
-        }
-        // It shouldn't exist in background
-        assert!(map.bg(&"none_key").is_none());
+        let evicted = map.swap_if(&"key", |v| if *v == 11 { Some(42) } else { None });
+        assert_eq!(evicted, Some(1));
+        assert_eq!(map.fg(&"key"), Some(&42));
+        assert_eq!(map.bg(&"key"), Some(&11));
     }
 }

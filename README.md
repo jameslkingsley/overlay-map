@@ -71,6 +71,26 @@ fn main() {
 - Config overlays, merging, and snapshotting
 - Avoiding unnecessary cloning, allocation, and indirection in hot code paths
 
+## 🧪 Performance: `Overlay<T>` vs `Option<(T, Option<T>)>`
+
+These benchmarks measure the performance of the `push` operation in both the `Overlay<T>` and a conventional tuple-based implementation.
+
+| Overlay Implementation | Tuple Implementation |
+|------------------------|----------------------|
+| ![Overlay PDF](./assets/overlay_pdf.svg) | ![Tuple PDF](./assets/tuple_pdf.svg) |
+| ![Overlay Regression](./assets/overlay_regression.svg) | ![Tuple Regression](./assets/tuple_regression.svg) |
+
+### 📊 Interpretation
+
+- **Overlay**:
+  - Operates near L1 cache speeds (sub-100ps per op).
+  - Compact, branchless bitfield logic leads to extremely low overhead.
+- **Tuple**:
+  - Slower and more predictable due to enum tagging and control-flow overhead.
+  - Useful baseline, but significantly outperformed by `Overlay`.
+
+> These graphs were generated using [Criterion.rs](https://bheisler.github.io/criterion.rs/book/) and represent measured runtime distribution and scaling with iteration count.
+
 ## 📚 Documentation
 
 - [Docs.rs](https://docs.rs/overlay-map)
