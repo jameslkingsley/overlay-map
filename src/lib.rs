@@ -476,7 +476,7 @@ where
 {
     /// Inserts each `(K, V)` pair into the map by pushing the value into the foreground layer.
     ///
-    /// This behaves the same as calling [`push`] for each element in the iterator. If a key
+    /// This behaves the same as calling push for each element in the iterator. If a key
     /// already exists, the current foreground value is moved to the background, and the
     /// new value becomes the foreground. If the key is new, it is inserted.
     ///
@@ -865,14 +865,12 @@ impl<T> Overlay<T> {
     #[inline]
     pub fn pull(&mut self) -> Option<T> {
         let fgi = self.fg_index();
-        if !self.is_slot_present(fgi) {
-            return None;
+        if self.is_slot_present(fgi) {
+            self.bits ^= FG_SLOT | (1 << fgi);
+            Some(unsafe { self.slots[fgi].assume_init_read() })
+        } else {
+            None
         }
-
-        let evicted = unsafe { self.slots[fgi].assume_init_read() };
-        self.bits &= !(1 << fgi);
-        self.flip_unchecked();
-        Some(evicted)
     }
 
     /// Pull the current foreground value without checking if it is present.
@@ -894,10 +892,8 @@ impl<T> Overlay<T> {
     #[inline]
     pub fn pull_unchecked(&mut self) -> T {
         let fgi = self.fg_index();
-        let evicted = unsafe { self.slots[fgi].assume_init_read() };
-        self.bits &= !(1 << fgi);
-        self.flip_unchecked();
-        evicted
+        self.bits ^= FG_SLOT | (1 << fgi);
+        unsafe { self.slots[fgi].assume_init_read() }
     }
 
     /// Swap in a new foreground value, returning the old background if present.
@@ -981,12 +977,37 @@ impl<T> Overlay<T> {
     /// ```
     #[inline]
     pub fn flip(&mut self) {
-        let mask = ((self.bits & SLOT_MASK) >> 1) & 1;
-        self.bits ^= mask << 2;
+        if (self.bits & SLOT_MASK) == SLOT_MASK {
+            self.bits ^= FG_SLOT;
+        }
     }
 
+    /// Flips the foreground and background slots **without checking** if both are present.
+    ///
+    /// This is the unchecked, zero-cost variant of [`flip`](Self::flip), intended for internal
+    /// or performance-critical use when it is already known that both slots contain valid values.
+    ///
+    /// This method **does not perform any presence checks**. If one of the slots is uninitialized,
+    /// calling this method results in **undefined behavior** when those slots are later accessed.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that:
+    ///
+    /// - Both slots (foreground and background) are currently initialized.
+    /// - A subsequent use of `fg_unchecked` or `bg_unchecked` will not access uninitialized memory.
+    ///
+    /// # Example
+    /// ```
+    /// use overlay_map::Overlay;
+    ///
+    /// let mut entry = Overlay::new_both("a", "b");
+    /// entry.flip_unchecked(); // swaps roles without checks
+    /// assert_eq!(entry.fg(), Some(&"b"));
+    /// assert_eq!(entry.bg(), Some(&"a"));
+    /// ```
     #[inline]
-    fn flip_unchecked(&mut self) {
+    pub fn flip_unchecked(&mut self) {
         self.bits ^= FG_SLOT;
     }
 
