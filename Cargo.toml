@@ -1,6 +1,6 @@
 [package]
 name = "overlay-map"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 authors = ["James Kingsley <jameslkingsley@icloud.com>"]
 description = "A two-layered map data structure for Rust that tracks current and previous values for each key — with zero-clone, in-place state transitions."
@@ -9,8 +9,18 @@ repository = "https://github.com/jameslkingsley/overlay-map"
 documentation = "https://docs.rs/overlay-map"
 homepage = "https://github.com/jameslkingsley/overlay-map"
 readme = "README.md"
-keywords = ["map", "data-structure", "overlay", "two-layer"]
 categories = ["data-structures"]
+keywords = [
+  "map",
+  "data-structure",
+  "overlay",
+  "in-place",
+  "zero-copy",
+  "delta",
+  "dual-layer",
+  "no-alloc",
+  "transient"
+]
 
 [[bench]]
 name = "overlaymap"

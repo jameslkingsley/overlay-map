@@ -4,8 +4,6 @@
 
 It provides `OverlayMap<K, V>`, a map where each value is an `Overlay<V>`: a compact two-slot container that allows pushing, swapping, and pulling values without cloning or heap allocation.
 
-> ⚠️ **Work in progress**: The library is still evolving.
-
 ## 📦 Features
 
 - ✅ **In-place, zero-cost value updates**
@@ -73,7 +71,9 @@ fn main() {
 
 ## 🧪 Performance: `Overlay<T>` vs `Option<(T, Option<T>)>`
 
-These benchmarks measure the performance of the `push` operation in both the `Overlay<T>` and a conventional tuple-based implementation.
+These benchmarks measure the performance of the `push` operation in both the
+`Overlay<T>` and a conventional tuple-based implementation. Recorded on a
+MacBook Air M4.
 
 ### 📊 Overlay Implementation
 
